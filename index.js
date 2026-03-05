@@ -1,5 +1,5 @@
 // ==================== index.js (NOVA XMD V1) ====================
-// ✅ 100% CommonJS | ✅ Pair route: /pair | ✅ Store AntiDelete (2 keys) | ✅ Welcome + Preview chaîne | ✅ AutoStatus FIX
+// Stable | Anti reconnect loop | Anti double socket | Anti spam welcome
 
 const {
   default: makeWASocket,
@@ -36,11 +36,17 @@ const sessionsDir = path.join(__dirname, "accounts");
 if (!fs.existsSync(sessionsDir)) fs.mkdirSync(sessionsDir, { recursive: true });
 
 let tempSocks = {};
+
 global.msgStore = global.msgStore || {};
 global.owner = String(config.OWNER_NUMBER || "").replace(/[^0-9]/g, "");
 global.botStartTime = global.botStartTime || Date.now();
 
-// ================== AUTO STATUS (load DB -> global) ==================
+// protections
+global.__locks = global.__locks || new Set();
+global.__retries = global.__retries || new Map();
+global.__welcomeSent = global.__welcomeSent || new Set();
+
+// ================= AUTO STATUS =================
 global.autoStatus = global.autoStatus ?? false;
 try {
   const autoFile = path.join(__dirname, "data", "autostatus.json");
@@ -48,14 +54,11 @@ try {
     const j = JSON.parse(fs.readFileSync(autoFile, "utf8"));
     global.autoStatus = !!j.enabled;
   }
-} catch {
-  global.autoStatus = false;
-}
+} catch {}
 
-// ✅ static files (index.html etc)
 app.use(express.static(__dirname));
 
-// ==================== HELPERS ====================
+// ================= HELPERS =================
 function normJid(jid = "") {
   jid = String(jid || "");
   if (jid.includes(":") && jid.includes("@")) {
@@ -77,7 +80,6 @@ function newsletterContext() {
   };
 }
 
-// Carte style “Voir Channel” (le lien n’apparait pas dans le texte)
 function channelCardContext() {
   return {
     ...newsletterContext(),
@@ -93,71 +95,98 @@ function channelCardContext() {
   };
 }
 
-// ===============================
-// START BOT
-// ===============================
+// ================= START BOT =================
 async function startUserBot(phoneNumber, isPairing = false) {
+
   const cleanNumber = String(phoneNumber || "").replace(/[^0-9]/g, "");
   const sessionName = `session_${cleanNumber}`;
   const sessionPath = path.join(sessionsDir, sessionName);
 
-  // reset session si pairing
-  if (isPairing) {
-    if (tempSocks[sessionName]) {
-      try { tempSocks[sessionName].end(); } catch {}
-      delete tempSocks[sessionName];
-    }
-    if (fs.existsSync(sessionPath)) {
-      fs.rmSync(sessionPath, { recursive: true, force: true });
-    }
+  if (global.__locks.has(sessionName)) {
+    console.log("Start déjà en cours:", cleanNumber);
+    return tempSocks[sessionName];
   }
 
-  const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-  const { version } = await fetchLatestBaileysVersion();
+  global.__locks.add(sessionName);
 
-  // ✅ Mode runtime (modifiable via setMode dans case.js)
-  let currentMode = (config.MODE || "public").toLowerCase();
+  try {
 
-  const sock = makeWASocket({
-    version,
-    logger: pino({ level: "silent" }),
-    printQRInTerminal: false,
-    browser: ["Ubuntu", "Chrome", "20.0.04"],
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
-    }
-  });
+    if (isPairing) {
+      if (tempSocks[sessionName]) {
+        try { tempSocks[sessionName].end(); } catch {}
+        delete tempSocks[sessionName];
+      }
 
-  tempSocks[sessionName] = sock;
-
-  // --- Connection update ---
-  sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect } = update;
-
-    if (connection === "close") {
-      const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-
-      if (reason !== DisconnectReason.loggedOut) {
-        console.log(`[${cleanNumber}] Reconnexion...`);
-        startUserBot(cleanNumber);
-      } else {
-        console.log(`[${cleanNumber}] Déconnecté (loggedOut).`);
+      if (fs.existsSync(sessionPath)) {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
       }
     }
 
-    if (connection === "open") {
-      console.log(`✅ [${cleanNumber}] Session connectée`);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+    const { version } = await fetchLatestBaileysVersion();
 
-      try {
-        const userJid = normJid(sock.user?.id);
-        const modeTxt = String(currentMode || "public").toUpperCase();
+    let currentMode = (config.MODE || "public").toLowerCase();
 
-        await sock.sendMessage(
-          userJid,
-          {
+    const sock = makeWASocket({
+      version,
+      logger: pino({ level: "silent" }),
+      printQRInTerminal: false,
+      browser: ["Ubuntu", "Chrome", "20.0.04"],
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
+      }
+    });
+
+    tempSocks[sessionName] = sock;
+
+    // ===== CONNECTION UPDATE =====
+    sock.ev.on("connection.update", async (update) => {
+
+      const { connection, lastDisconnect } = update;
+
+      if (connection === "close") {
+
+        const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+
+        try { sock.end?.(); } catch {}
+
+        delete tempSocks[sessionName];
+
+        if (reason === DisconnectReason.loggedOut) {
+          console.log("Session logout:", cleanNumber);
+          global.__welcomeSent.delete(sessionName);
+          return;
+        }
+
+        const prev = global.__retries.get(sessionName) || 0;
+        const next = Math.min(prev + 1, 5);
+        global.__retries.set(sessionName, next);
+
+        const wait = Math.min(2000 * next, 10000);
+
+        console.log("Reconnexion:", cleanNumber, "dans", wait);
+
+        setTimeout(() => startUserBot(cleanNumber), wait);
+      }
+
+      if (connection === "open") {
+
+        console.log("Session connectée:", cleanNumber);
+
+        global.__retries.set(sessionName, 0);
+
+        if (global.__welcomeSent.has(sessionName)) return;
+        global.__welcomeSent.add(sessionName);
+
+        try {
+
+          const userJid = normJid(sock.user?.id);
+          const modeTxt = String(currentMode || "public").toUpperCase();
+
+          await sock.sendMessage(userJid, {
             text:
-`╭━━〔 🤖 *${config.BOT_NAME || "NOVA XMD V1"}* 〕━━╮
+`╭━━〔 🤖 ${config.BOT_NAME || "NOVA XMD V1"} 〕━━╮
 ┃ ✅ CONNECTÉ AVEC SUCCÈS
 ┃ 👨‍💻 Developer : ${config.OWNER_NAME || "DEV NOVA"}
 ┃ 🌐 Mode : ${modeTxt}
@@ -166,26 +195,25 @@ async function startUserBot(phoneNumber, isPairing = false) {
 ┃ 🔔 Updates • News • Support
 ╰━━━━━━━━━━━━━━━━━━╯`,
             contextInfo: channelCardContext()
-          }
-        );
-      } catch (err) {
-        console.log("WELCOME ERROR:", err?.message || err);
+          });
+
+        } catch (e) {
+          console.log("WELCOME ERROR:", e);
+        }
       }
-    }
-  });
 
-  sock.ev.on("creds.update", saveCreds);
+    });
 
-  // --- Messages upsert (commands + store antidelete + antibot + autostatus) ---
-  sock.ev.on("messages.upsert", async (chatUpdate) => {
-    try {
+    sock.ev.on("creds.update", saveCreds);
+
+    // ===== MESSAGES =====
+    sock.ev.on("messages.upsert", async (chatUpdate) => {
+
       const m = chatUpdate.messages?.[0];
       if (!m || !m.message) return;
 
       const jid = m.key.remoteJid;
 
-      // ================== AUTO STATUS VIEW ==================
-      // (Ne lit les status QUE si AutoStatus activé)
       if (jid === "status@broadcast") {
         if (global.autoStatus && !m.key.fromMe) {
           try { await sock.readMessages([m.key]); } catch {}
@@ -193,89 +221,18 @@ async function startUserBot(phoneNumber, isPairing = false) {
         return;
       }
 
-      // =========================
-      // ✅ STORE FOR ANTIDELETE
-      // =========================
       global.msgStore[m.key.id] = m;
-      global.msgStore[`${m.key.remoteJid}:${m.key.id}`] = m;
 
       setTimeout(() => {
         delete global.msgStore[m.key.id];
-        delete global.msgStore[`${m.key.remoteJid}:${m.key.id}`];
       }, 7200000);
 
-      // ✅ ANTIBOT
       try { await antibotHandler(sock, m); } catch {}
-
-      // Newsletter handler
       try { await newsletterHandler(sock, m); } catch {}
 
-try {
-  const antimention = require("./commands/antimention.js");
-  if (typeof antimention.handleAntiMention === "function") {
-    await antimention.handleAntiMention(sock, m, {
-      isGroup: jid.endsWith("@g.us"),
-      isBotAdmin: false // ← idéalement tu passes le vrai isBotAdmin depuis case.js ou groupMetadata
-    });
-  }
-} catch {}
-
-// ================= NOVA AUTO (DM + MENTION GROUPE) =================
-try {
-  const { askNova } = require("./system/novaAI");
-  const usedPrefix = config.PREFIX || ".";
-
-  const jid = m.key.remoteJid;
-  const isGroup = jid.endsWith("@g.us");
-
-  // Récupère le texte (simple)
-  const msg = m.message || {};
-  const body =
-    msg.conversation ||
-    msg.extendedTextMessage?.text ||
-    msg.imageMessage?.caption ||
-    msg.videoMessage?.caption ||
-    "";
-
-  // ❌ Si c'est une commande -> laisse le handler gérer (.nova bonjour etc.)
-  if (String(body || "").trim().startsWith(usedPrefix)) {
-    // rien
-  } else {
-    const botJid = (sock.user?.id || "").split(":")[0] + "@s.whatsapp.net";
-
-    // ✅ En privé : répond automatiquement à tout message texte
-    if (!isGroup && !m.key.fromMe && body.trim()) {
-      const username = m.pushName || "Utilisateur";
-      const aiReply = await askNova(body.trim(), username, jid);
-      await sock.sendMessage(jid, { text: aiReply }, { quoted: m });
-    }
-
-    // ✅ En groupe : répond seulement si tag
-    if (isGroup && !m.key.fromMe) {
-      const ctx =
-        msg.extendedTextMessage?.contextInfo ||
-        msg.imageMessage?.contextInfo ||
-        msg.videoMessage?.contextInfo ||
-        msg.documentMessage?.contextInfo ||
-        null;
-
-      const mentioned = ctx?.mentionedJid || [];
-      if (mentioned.includes(botJid) && body.trim()) {
-        const clean = body.replace(/@\d+/g, "").trim();
-        if (clean) {
-          const username = m.pushName || "Utilisateur";
-          const aiReply = await askNova(clean, username, jid);
-          await sock.sendMessage(jid, { text: aiReply }, { quoted: m });
-        }
-      }
-    }
-  }
-} catch {}
-// ================= END NOVA AUTO =================
-
-      // Commands
       const cmdHandler = require("./case.js");
       const usedPrefix = config.PREFIX || ".";
+
       await cmdHandler(
         sock,
         m,
@@ -283,80 +240,93 @@ try {
         (newMode) => { currentMode = String(newMode || "public").toLowerCase(); },
         currentMode
       );
-    } catch (err) {
-      console.log("UPSERT ERROR:", err?.message || err);
-    }
-  });
 
-  // --- messages.update (antidelete) ---
-  sock.ev.on("messages.update", async (updates) => {
-    try {
+    });
+
+    sock.ev.on("messages.update", async (updates) => {
       for (const upd of updates) {
-        await antideleteHandler(sock, upd);
+        try { await antideleteHandler(sock, upd); } catch {}
       }
-    } catch (e) {
-      console.log("messages.update error:", e?.message || e);
-    }
-  });
+    });
 
-  // --- welcome/goodbye ---
-  sock.ev.on("group-participants.update", async (upd) => {
-    try {
-      await welcomeHandler(sock, upd);
-    } catch {}
-  });
+    sock.ev.on("group-participants.update", async (upd) => {
+      try { await welcomeHandler(sock, upd); } catch {}
+    });
 
-  return sock;
+    return sock;
+
+  } catch (e) {
+
+    console.log("BOT START ERROR:", e);
+
+  } finally {
+
+    global.__locks.delete(sessionName);
+
+  }
 }
 
-// ===============================
-// RESTORE SESSIONS
-// ===============================
+// ================= RESTORE =================
 async function restoreSessions() {
+
   if (!fs.existsSync(sessionsDir)) return;
 
   const folders = fs.readdirSync(sessionsDir);
+
   for (const folder of folders) {
+
     if (folder.startsWith("session_")) {
+
       const phoneNumber = folder.replace("session_", "");
-      console.log(`🔄 Restore: ${phoneNumber}`);
+
+      console.log("Restore:", phoneNumber);
+
       await startUserBot(phoneNumber);
+
       await delay(4000);
     }
   }
 }
 
-// ===============================
-// ROUTES
-// ===============================
+// ================= ROUTES =================
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// Pair route expected by index.html
 app.get("/pair", async (req, res) => {
+
   try {
+
     const num = String(req.query.number || "").replace(/[^0-9]/g, "");
+
     if (!num || num.length < 8) {
       return res.status(400).json({ error: "Numéro invalide" });
     }
 
     const sock = await startUserBot(num, true);
+
     await delay(2500);
 
     const code = await sock.requestPairingCode(num);
+
     return res.json({ code });
+
   } catch (e) {
-    console.log("PAIR ERROR:", e?.message || e);
+
+    console.log("PAIR ERROR:", e);
+
     return res.status(500).json({ error: "Impossible de générer le code" });
   }
+
 });
 
-// ===============================
-// SERVER
-// ===============================
+// ================= SERVER =================
 app.listen(port, async () => {
-  console.log(`🌐 ${config.BOT_NAME || "NOVA XMD V1"} prêt : http://localhost:${port}`);
+
+  console.log("Serveur prêt:", port);
+
   global.botStartTime = Date.now();
+
   await restoreSessions();
+
 });
