@@ -1,53 +1,53 @@
-const fs = require("fs");
-const path = require("path");
-
-const configPath = path.join(__dirname, "../config.js");
-
+// ==================== commands/setprefix.js ====================
 module.exports = {
-    name: "setprefix",
-    category: "Owner",
-    description: "Changer le prefix du bot",
+  name: "setprefix",
+  category: "Owner",
+  description: "Changer le préfixe (par numéro/session)",
 
-    async execute(sock, m, args, { isOwner }) {
+  async execute(sock, m, args, extra = {}) {
+    try {
+      const { isOwner, sender } = extra;
 
-        const from = m.key.remoteJid;
+      if (!isOwner) {
+        return sock.sendMessage(m.chat, { text: "❌ Owner only." }, { quoted: m });
+      }
 
-        if (!isOwner) {
-            return sock.sendMessage(from, {
-                text: "🚫 Commande réservée au propriétaire."
-            }, { quoted: m });
-        }
+      const newPrefix = (args[0] || "").trim();
+      if (!newPrefix) {
+        return sock.sendMessage(
+          m.chat,
+          { text: "❌ Utilisation : .setprefix !" },
+          { quoted: m }
+        );
+      }
 
-        const newPrefix = args[0];
+      // Numéro du bot/session (celui qui est connecté)
+      const botNum = String(sock.user?.id || "").split(":")[0].split("@")[0];
 
-        if (!newPrefix) {
-            return sock.sendMessage(from, {
-                text: "Exemple :\n.setprefix !"
-            }, { quoted: m });
-        }
+      // Sauvegarde prefix pour CE numéro seulement
+      const ok = global.setPrefixFor
+        ? global.setPrefixFor(botNum, newPrefix)
+        : (global.prefixDB && (global.prefixDB[botNum] = newPrefix), true);
 
-        try {
-            let configContent = fs.readFileSync(configPath, "utf8");
+      if (!ok) {
+        return sock.sendMessage(
+          m.chat,
+          { text: "❌ Erreur: impossible de sauvegarder le prefix." },
+          { quoted: m }
+        );
+      }
 
-            // Remplacer la ligne PREFIX
-            configContent = configContent.replace(
-                /PREFIX:\s*["'`](.*?)["'`]/,
-                `PREFIX: "${newPrefix}"`
-            );
-
-            fs.writeFileSync(configPath, configContent);
-
-            global.prefix = newPrefix;
-
-            await sock.sendMessage(from, {
-                text: `✅ Prefix changé en : *${newPrefix}*\n\n🔁 Redémarre le bot pour appliquer définitivement.`
-            }, { quoted: m });
-
-        } catch (err) {
-            console.error(err);
-            sock.sendMessage(from, {
-                text: "❌ Erreur lors du changement de prefix."
-            }, { quoted: m });
-        }
+      return sock.sendMessage(
+        m.chat,
+        { text: `✅ Prefix changé pour *${botNum}* → *${newPrefix}*` },
+        { quoted: m }
+      );
+    } catch (e) {
+      return sock.sendMessage(
+        m.chat,
+        { text: "❌ Erreur setprefix: " + (e?.message || e) },
+        { quoted: m }
+      );
     }
+  },
 };
