@@ -1,8 +1,7 @@
 // ==================== case.js (NOVA XMD V1) ====================
 // ✅ CommonJS | ✅ Loader commands | ✅ AntiLink hook | ✅ AutoStatus hook
 // ✅ Mode public/self
-// ✅ setprefix PAR NUMÉRO via global.setPrefixFor (data/prefix.json géré par index.js)
-// ❌ ne modifie PLUS config.PREFIX
+// ❌ PAS de setprefix | ❌ PAS de data/prefix.json
 
 const fs = require("fs");
 const path = require("path");
@@ -169,7 +168,7 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
     // ✅ AUTOSTATUS hook
     try { await autostatusHandler(sock, m); } catch {}
 
-    // ✅ AntiLink hook (premier passage)
+    // ✅ AntiLink hook (AVANT retour si pas cmd)
     try {
       if (antiLinkModule?.handleAntiLink) {
         await antiLinkModule.handleAntiLink(sock, m, { isGroup, isOwner });
@@ -218,18 +217,6 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
       }
       return reply(`Utilisation :\n${usedPrefix}mode public\n${usedPrefix}mode private`);
     }
-
-    // ✅ setprefix PAR NUMÉRO (session)
-    if (command === "setprefix") {
-      if (!isOwner) return reply("🚫 Commande réservée au propriétaire.");
-
-      const newP = String(args[0] || "").trim();
-      if (!newP) return reply(`Utilisation : ${usedPrefix}setprefix .`);
-
-      const botNum = String(sock.user?.id || "")
-        .split(":")[0]
-        .split("@")[0]
-        .replace(/\D/g, "");
 
     // group context
     let groupCtx = {};
