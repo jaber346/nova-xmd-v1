@@ -1,5 +1,5 @@
 // ==================== index.js (NOVA XMD V1) ====================
-// Stable | Anti reconnect loop | Anti double socket | Anti spam welcome | Prefix par numéro
+// Stable | Anti reconnect loop | Anti double socket | Anti spam welcome
 
 const {
   default: makeWASocket,
@@ -55,45 +55,6 @@ try {
     global.autoStatus = !!j.enabled;
   }
 } catch {}
-
-// ================== PREFIX DB (par numéro) ==================
-const dataDir = path.join(__dirname, "data");
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-
-const prefixFile = path.join(dataDir, "prefix.json");
-global.prefixDB = global.prefixDB || {};
-
-try {
-  if (fs.existsSync(prefixFile)) {
-    global.prefixDB = JSON.parse(fs.readFileSync(prefixFile, "utf8")) || {};
-  }
-} catch {
-  global.prefixDB = {};
-}
-
-function getPrefixFor(num) {
-  const n = String(num || "").replace(/[^0-9]/g, "");
-  return global.prefixDB[n] || config.PREFIX || ".";
-}
-
-function setPrefixFor(num, newPrefix) {
-  const n = String(num || "").replace(/[^0-9]/g, "");
-  const p = String(newPrefix || "").trim();
-  if (!n || !p) return false;
-
-  global.prefixDB[n] = p;
-  try {
-    fs.writeFileSync(prefixFile, JSON.stringify(global.prefixDB, null, 2));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// rendre accessible aux commandes
-global.getPrefixFor = getPrefixFor;
-global.setPrefixFor = setPrefixFor;
-// ================== END PREFIX DB ==================
 
 app.use(express.static(__dirname));
 
@@ -179,7 +140,6 @@ async function startUserBot(phoneNumber, isPairing = false) {
 
     tempSocks[sessionName] = sock;
 
-    // ===== CONNECTION UPDATE =====
     sock.ev.on("connection.update", async (update) => {
 
       const { connection, lastDisconnect } = update;
@@ -245,7 +205,6 @@ async function startUserBot(phoneNumber, isPairing = false) {
 
     sock.ev.on("creds.update", saveCreds);
 
-    // ===== MESSAGES =====
     sock.ev.on("messages.upsert", async (chatUpdate) => {
 
       const m = chatUpdate.messages?.[0];
@@ -270,9 +229,7 @@ async function startUserBot(phoneNumber, isPairing = false) {
       try { await newsletterHandler(sock, m); } catch {}
 
       const cmdHandler = require("./case.js");
-
-      // ✅ prefix par session (par numéro)
-      const usedPrefix = getPrefixFor(cleanNumber);
+      const usedPrefix = config.PREFIX || ".";
 
       await cmdHandler(
         sock,
@@ -296,36 +253,10 @@ async function startUserBot(phoneNumber, isPairing = false) {
 
     return sock;
 
-  } catch (e) {
-
-    console.log("BOT START ERROR:", e);
-
   } finally {
 
     global.__locks.delete(sessionName);
 
-  }
-}
-
-// ================= RESTORE =================
-async function restoreSessions() {
-
-  if (!fs.existsSync(sessionsDir)) return;
-
-  const folders = fs.readdirSync(sessionsDir);
-
-  for (const folder of folders) {
-
-    if (folder.startsWith("session_")) {
-
-      const phoneNumber = folder.replace("session_", "");
-
-      console.log("Restore:", phoneNumber);
-
-      await startUserBot(phoneNumber);
-
-      await delay(4000);
-    }
   }
 }
 
@@ -334,7 +265,10 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
+// ✅ ROUTE PAIR CORRIGÉE
 app.get("/pair", async (req, res) => {
+
+  let sock = null;
 
   try {
 
@@ -344,19 +278,26 @@ app.get("/pair", async (req, res) => {
       return res.status(400).json({ error: "Numéro invalide" });
     }
 
-    const sock = await startUserBot(num, true);
+    sock = await startUserBot(num, true);
 
-    await delay(2500);
+    await delay(1500);
 
     const code = await sock.requestPairingCode(num);
 
-    return res.json({ code });
+    res.json({ code });
 
   } catch (e) {
 
     console.log("PAIR ERROR:", e);
 
-    return res.status(500).json({ error: "Impossible de générer le code" });
+    res.status(500).json({ error: "Impossible de générer le code" });
+
+  } finally {
+
+    setTimeout(() => {
+      try { sock?.end?.(); } catch {}
+    }, 2000);
+
   }
 
 });
@@ -367,7 +308,5 @@ app.listen(port, async () => {
   console.log("Serveur prêt:", port);
 
   global.botStartTime = Date.now();
-
-  await restoreSessions();
 
 });
