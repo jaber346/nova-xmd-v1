@@ -1,7 +1,8 @@
 // ==================== case.js (NOVA XMD V1) ====================
 // ✅ CommonJS | ✅ Loader commands | ✅ AntiLink hook | ✅ AutoStatus hook
-// ✅ Mode public/self | ✅ setprefix GLOBAL (config.PREFIX) + save optionnel
-// ❌ Pas de prefix par numéro | ❌ Pas de data/prefix.json
+// ✅ Mode public/self
+// ✅ setprefix PAR NUMÉRO via global.setPrefixFor (data/prefix.json géré par index.js)
+// ❌ ne modifie PLUS config.PREFIX
 
 const fs = require("fs");
 const path = require("path");
@@ -114,26 +115,6 @@ function getBody(m) {
   return "";
 }
 
-// save prefix in config.js (si ton config est un objet JS)
-function savePrefixToConfigFile(newPrefix) {
-  try {
-    const configPath = path.join(__dirname, "config.js");
-    if (!fs.existsSync(configPath)) return;
-
-    let content = fs.readFileSync(configPath, "utf8");
-
-    // marche si tu as: PREFIX: "."
-    content = content.replace(
-      /PREFIX\s*:\s*["'`].*?["'`]/,
-      `PREFIX: "${String(newPrefix).replace(/"/g, '\\"')}"`
-    );
-
-    fs.writeFileSync(configPath, content, "utf8");
-  } catch {
-    // ignore
-  }
-}
-
 async function buildGroupContext(sock, from, sender) {
   try {
     const metadata = await sock.groupMetadata(from);
@@ -171,7 +152,8 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
     const sender = getSender(m);
 
     const botJid = normJid(sock.user?.id || "");
-    const ownerJid = String(config.OWNER_NUMBER || "").replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+    const ownerJid =
+      String(config.OWNER_NUMBER || "").replace(/[^0-9]/g, "") + "@s.whatsapp.net";
 
     const isOwner =
       m.key.fromMe === true ||
@@ -194,7 +176,7 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
       }
     } catch {}
 
-    // ✅ boutons wall4k sans prefix (si tu en as)
+    // ✅ boutons wall4k sans prefix
     try {
       if (body.startsWith("wall4k_next|")) {
         const wall4k = require("./commands/wall4k.js");
@@ -237,15 +219,26 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
       return reply(`Utilisation :\n${usedPrefix}mode public\n${usedPrefix}mode private`);
     }
 
-    // ✅ setprefix GLOBAL (1 seul prefix pour tous)
+    // ✅ setprefix PAR NUMÉRO (session)
     if (command === "setprefix") {
       if (!isOwner) return reply("🚫 Commande réservée au propriétaire.");
+
       const newP = String(args[0] || "").trim();
       if (!newP) return reply(`Utilisation : ${usedPrefix}setprefix .`);
 
-      config.PREFIX = newP;          // runtime
-      savePrefixToConfigFile(newP);  // persistant (si possible)
-      return reply(`✅ Prefix changé : *${newP}*`);
+      const botNum = String(sock.user?.id || "")
+        .split(":")[0]
+        .split("@")[0]
+        .replace(/\D/g, "");
+
+      if (typeof global.setPrefixFor !== "function") {
+        return reply("❌ Prefix DB non chargé. Mets à jour index.js (global.setPrefixFor).");
+      }
+
+      const ok = global.setPrefixFor(botNum, newP);
+      if (!ok) return reply("❌ Impossible de sauvegarder le prefix (data/prefix.json).");
+
+      return reply(`✅ Prefix changé pour *${botNum}* : *${newP}*`);
     }
 
     // group context
