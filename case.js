@@ -1,14 +1,23 @@
+// ==================== case.js (NOVA XMD V1) ====================
+// ✅ CommonJS | ✅ Loader commands | ✅ AntiLink hook | ✅ AutoStatus hook
+// ✅ Prefix PAR NUMÉRO (via global.getPrefixFor / global.setPrefixFor depuis index.js)
+// ✅ setprefix ne touche PLUS config.PREFIX (donc ne casse pas les autres sessions)
+
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 
 // ✅ ANTILINK MODULE (commande + hook dans un seul fichier)
 let antiLinkModule = null;
-try { antiLinkModule = require("./commands/antilink"); } catch {}
+try {
+  antiLinkModule = require("./commands/antilink");
+} catch {}
 
 // ✅ AUTOSTATUS HOOK
 let autostatusHandler = async () => {};
-try { autostatusHandler = require("./data/autostatus.js"); } catch {}
+try {
+  autostatusHandler = require("./data/autostatus.js");
+} catch {}
 
 // ================= COMMAND LOADER =================
 const commands = new Map();
@@ -108,29 +117,13 @@ function getBody(m) {
   return "";
 }
 
-// Persist prefix (optional)
-function savePrefixToConfigFile(newPrefix) {
-  try {
-    const configPath = path.join(__dirname, "config.js");
-    if (!fs.existsSync(configPath)) return;
-
-    let content = fs.readFileSync(configPath, "utf8");
-    content = content.replace(/PREFIX\s*:\s*["'`].*?["'`]/, `PREFIX: "${newPrefix}"`);
-    fs.writeFileSync(configPath, content, "utf8");
-  } catch {
-    // ignore
-  }
-}
-
 async function buildGroupContext(sock, from, sender) {
   try {
     const metadata = await sock.groupMetadata(from);
     const participants = metadata?.participants || [];
     const senderN = normJid(sender);
 
-    const admins = participants
-      .filter((p) => p.admin)
-      .map((p) => normJid(p.id));
+    const admins = participants.filter((p) => p.admin).map((p) => normJid(p.id));
 
     const botJid = normJid(sock.user?.id || "");
 
@@ -176,28 +169,28 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
     const body = (getBody(m) || "").trim();
     if (!body) return;
 
-// ✅ autoriser les boutons NEXT wall4k sans prefix
-if (body.startsWith("wall4k_next|")) {
-  const wall4k = require("./commands/wall4k.js");
-  const info = wall4k.parseBtnId(body);
-  if (info) return wall4k.sendWall4K(sock, from, m, info);
-}
+    // ✅ autoriser les boutons NEXT wall4k sans prefix
+    try {
+      if (body.startsWith("wall4k_next|")) {
+        const wall4k = require("./commands/wall4k.js");
+        const info = wall4k.parseBtnId(body);
+        if (info) return wall4k.sendWall4K(sock, from, m, info);
+      }
+    } catch {}
 
     const reply = (text) => sock.sendMessage(from, { text }, { quoted: m });
 
     // ✅ AUTOSTATUS (marquer status vu si activé)
-    // ça n'affecte pas les autres messages
-    try { await autostatusHandler(sock, m); } catch {}
+    try {
+      await autostatusHandler(sock, m);
+    } catch {}
 
-    // ✅ ANTI-LINK AUTO DELETE (si module dispo)
-    // Important: AVANT return !isCmd
+    // ✅ ANTI-LINK AUTO DELETE (si module dispo) — avant isCmd return
     try {
       if (antiLinkModule?.handleAntiLink) {
-        // groupCtx pas encore prêt ici, donc on passe un extra minimal
         await antiLinkModule.handleAntiLink(sock, m, {
           isGroup,
           isOwner,
-          // on ne sait pas encore isAdmin/isBotAdmin ici -> le hook peut juste skip
         });
       }
     } catch {}
@@ -205,6 +198,7 @@ if (body.startsWith("wall4k_next|")) {
     const isCmd = body.startsWith(usedPrefix);
     if (!isCmd) return;
 
+    // mode self
     if (String(currentMode).toLowerCase() === "self" && !isOwner) return;
 
     const parts = body.slice(usedPrefix.length).trim().split(/\s+/);
@@ -216,11 +210,18 @@ if (body.startsWith("wall4k_next|")) {
       loadAllCommands();
 
       // refresh modules too
-      try { delete require.cache[require.resolve("./commands/antilink")]; antiLinkModule = require("./commands/antilink"); } catch {}
-      try { delete require.cache[require.resolve("./data/autostatus.js")]; autostatusHandler = require("./data/autostatus.js"); } catch {}
+      try {
+        delete require.cache[require.resolve("./commands/antilink")];
+        antiLinkModule = require("./commands/antilink");
+      } catch {}
+      try {
+        delete require.cache[require.resolve("./data/autostatus.js")];
+        autostatusHandler = require("./data/autostatus.js");
+      } catch {}
 
       return reply("✅ Commands rechargées.");
     }
+
     // built-in mode
     if (command === "mode") {
       if (!isOwner) return reply("🚫 Commande réservée au propriétaire.");
@@ -237,15 +238,28 @@ if (body.startsWith("wall4k_next|")) {
       return reply(`Utilisation :\n${usedPrefix}mode public\n${usedPrefix}mode private`);
     }
 
-    // built-in setprefix
+    // ✅ built-in setprefix (PAR NUMÉRO / session)
     if (command === "setprefix") {
       if (!isOwner) return reply("🚫 Commande réservée au propriétaire.");
-      const newP = args[0];
+
+      const newP = (args[0] || "").trim();
       if (!newP) return reply(`Utilisation : ${usedPrefix}setprefix .`);
 
-      config.PREFIX = newP;
-      savePrefixToConfigFile(newP);
-      return reply(`✅ Prefix changé : *${newP}*`);
+      // numéro du compte connecté sur CE sock
+      const botNum = String(sock.user?.id || "")
+        .split(":")[0]
+        .split("@")[0]
+        .replace(/[^0-9]/g, "");
+
+      if (typeof global.setPrefixFor === "function") {
+        const ok = global.setPrefixFor(botNum, newP);
+        if (!ok) return reply("❌ Impossible de sauvegarder (data/prefix.json).");
+
+        return reply(`✅ Prefix changé pour *${botNum}* : *${newP}*`);
+      }
+
+      // fallback (si index.js n'a pas chargé le prefix DB)
+      return reply("❌ Prefix DB non chargé. Vérifie index.js (global.setPrefixFor).");
     }
 
     // group context (only for group commands)
@@ -255,7 +269,6 @@ if (body.startsWith("wall4k_next|")) {
     }
 
     // ✅ Re-run antilink hook now with full group context (accurate delete)
-    // (uniquement en groupe)
     try {
       if (isGroup && antiLinkModule?.handleAntiLink) {
         await antiLinkModule.handleAntiLink(sock, m, {
@@ -263,7 +276,7 @@ if (body.startsWith("wall4k_next|")) {
           isOwner,
           isSudo: false,
           isAdmin: groupCtx?.isAdmin || false,
-          isBotAdmin: groupCtx?.isBotAdmin || false
+          isBotAdmin: groupCtx?.isBotAdmin || false,
         });
       }
     } catch {}
@@ -280,7 +293,7 @@ if (body.startsWith("wall4k_next|")) {
         from,
         reply,
         ...groupCtx,
-        isAdminOrOwner: (groupCtx?.isAdmin || isOwner),
+        isAdminOrOwner: groupCtx?.isAdmin || isOwner,
       });
     }
 
