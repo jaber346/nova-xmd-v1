@@ -1,5 +1,5 @@
 // ==================== index.js (NOVA XMD V1) ====================
-// Stable | Anti reconnect loop | Anti double socket | Anti spam welcome
+// Stable | Anti reconnect loop | Anti double socket | Anti spam welcome | Prefix par numéro
 
 const {
   default: makeWASocket,
@@ -55,6 +55,45 @@ try {
     global.autoStatus = !!j.enabled;
   }
 } catch {}
+
+// ================== PREFIX DB (par numéro) ==================
+const dataDir = path.join(__dirname, "data");
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+const prefixFile = path.join(dataDir, "prefix.json");
+global.prefixDB = global.prefixDB || {};
+
+try {
+  if (fs.existsSync(prefixFile)) {
+    global.prefixDB = JSON.parse(fs.readFileSync(prefixFile, "utf8")) || {};
+  }
+} catch {
+  global.prefixDB = {};
+}
+
+function getPrefixFor(num) {
+  const n = String(num || "").replace(/[^0-9]/g, "");
+  return global.prefixDB[n] || config.PREFIX || ".";
+}
+
+function setPrefixFor(num, newPrefix) {
+  const n = String(num || "").replace(/[^0-9]/g, "");
+  const p = String(newPrefix || "").trim();
+  if (!n || !p) return false;
+
+  global.prefixDB[n] = p;
+  try {
+    fs.writeFileSync(prefixFile, JSON.stringify(global.prefixDB, null, 2));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// rendre accessible aux commandes
+global.getPrefixFor = getPrefixFor;
+global.setPrefixFor = setPrefixFor;
+// ================== END PREFIX DB ==================
 
 app.use(express.static(__dirname));
 
@@ -231,7 +270,9 @@ async function startUserBot(phoneNumber, isPairing = false) {
       try { await newsletterHandler(sock, m); } catch {}
 
       const cmdHandler = require("./case.js");
-      const usedPrefix = config.PREFIX || ".";
+
+      // ✅ prefix par session (par numéro)
+      const usedPrefix = getPrefixFor(cleanNumber);
 
       await cmdHandler(
         sock,
