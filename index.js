@@ -1,5 +1,5 @@
 // ==================== index.js (NOVA XMD V1) ====================
-// Stable | Anti reconnect loop | Anti double socket | Anti spam welcome
+// Stable | Anti reconnect loop | Anti double socket | Anti spam welcome | Prefix par numéro
 
 const {
   default: makeWASocket,
@@ -56,6 +56,46 @@ try {
   }
 } catch {}
 
+// ================== PREFIX DB (par numéro) ==================
+const dataDir = path.join(__dirname, "data");
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+const prefixFile = path.join(dataDir, "prefix.json");
+global.prefixDB = global.prefixDB || {};
+
+try {
+  if (fs.existsSync(prefixFile)) {
+    global.prefixDB = JSON.parse(fs.readFileSync(prefixFile, "utf8")) || {};
+  } else {
+    fs.writeFileSync(prefixFile, JSON.stringify({}, null, 2));
+  }
+} catch {
+  global.prefixDB = {};
+}
+
+function getPrefixFor(num) {
+  const n = String(num || "").replace(/[^0-9]/g, "");
+  return global.prefixDB[n] || config.PREFIX || ".";
+}
+
+function setPrefixFor(num, newPrefix) {
+  const n = String(num || "").replace(/[^0-9]/g, "");
+  const p = String(newPrefix || "").trim();
+  if (!n || !p) return false;
+
+  global.prefixDB[n] = p;
+  try {
+    fs.writeFileSync(prefixFile, JSON.stringify(global.prefixDB, null, 2));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+global.getPrefixFor = getPrefixFor;
+global.setPrefixFor = setPrefixFor;
+// ================== END PREFIX DB ==================
+
 app.use(express.static(__dirname));
 
 // ================= HELPERS =================
@@ -97,7 +137,6 @@ function channelCardContext() {
 
 // ================= START BOT =================
 async function startUserBot(phoneNumber, isPairing = false) {
-
   const cleanNumber = String(phoneNumber || "").replace(/[^0-9]/g, "");
   const sessionName = `session_${cleanNumber}`;
   const sessionPath = path.join(sessionsDir, sessionName);
@@ -110,13 +149,11 @@ async function startUserBot(phoneNumber, isPairing = false) {
   global.__locks.add(sessionName);
 
   try {
-
     if (isPairing) {
       if (tempSocks[sessionName]) {
         try { tempSocks[sessionName].end(); } catch {}
         delete tempSocks[sessionName];
       }
-
       if (fs.existsSync(sessionPath)) {
         fs.rmSync(sessionPath, { recursive: true, force: true });
       }
@@ -141,15 +178,12 @@ async function startUserBot(phoneNumber, isPairing = false) {
     tempSocks[sessionName] = sock;
 
     sock.ev.on("connection.update", async (update) => {
-
       const { connection, lastDisconnect } = update;
 
       if (connection === "close") {
-
         const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
 
         try { sock.end?.(); } catch {}
-
         delete tempSocks[sessionName];
 
         if (reason === DisconnectReason.loggedOut) {
@@ -163,23 +197,19 @@ async function startUserBot(phoneNumber, isPairing = false) {
         global.__retries.set(sessionName, next);
 
         const wait = Math.min(2000 * next, 10000);
-
         console.log("Reconnexion:", cleanNumber, "dans", wait);
 
         setTimeout(() => startUserBot(cleanNumber), wait);
       }
 
       if (connection === "open") {
-
         console.log("Session connectée:", cleanNumber);
-
         global.__retries.set(sessionName, 0);
 
         if (global.__welcomeSent.has(sessionName)) return;
         global.__welcomeSent.add(sessionName);
 
         try {
-
           const userJid = normJid(sock.user?.id);
           const modeTxt = String(currentMode || "public").toUpperCase();
 
@@ -195,18 +225,15 @@ async function startUserBot(phoneNumber, isPairing = false) {
 ╰━━━━━━━━━━━━━━━━━━╯`,
             contextInfo: channelCardContext()
           });
-
         } catch (e) {
           console.log("WELCOME ERROR:", e);
         }
       }
-
     });
 
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("messages.upsert", async (chatUpdate) => {
-
       const m = chatUpdate.messages?.[0];
       if (!m || !m.message) return;
 
@@ -220,16 +247,15 @@ async function startUserBot(phoneNumber, isPairing = false) {
       }
 
       global.msgStore[m.key.id] = m;
-
-      setTimeout(() => {
-        delete global.msgStore[m.key.id];
-      }, 7200000);
+      setTimeout(() => delete global.msgStore[m.key.id], 7200000);
 
       try { await antibotHandler(sock, m); } catch {}
       try { await newsletterHandler(sock, m); } catch {}
 
       const cmdHandler = require("./case.js");
-      const usedPrefix = config.PREFIX || ".";
+
+      // ✅ IMPORTANT : prefix par NUMÉRO (session)
+      const usedPrefix = global.getPrefixFor(cleanNumber);
 
       await cmdHandler(
         sock,
@@ -238,7 +264,6 @@ async function startUserBot(phoneNumber, isPairing = false) {
         (newMode) => { currentMode = String(newMode || "public").toLowerCase(); },
         currentMode
       );
-
     });
 
     sock.ev.on("messages.update", async (updates) => {
@@ -252,61 +277,51 @@ async function startUserBot(phoneNumber, isPairing = false) {
     });
 
     return sock;
-
+  } catch (e) {
+    console.log("BOT START ERROR:", e);
   } finally {
-
     global.__locks.delete(sessionName);
+  }
+}
 
+// ================= RESTORE =================
+async function restoreSessions() {
+  if (!fs.existsSync(sessionsDir)) return;
+
+  const folders = fs.readdirSync(sessionsDir);
+  for (const folder of folders) {
+    if (folder.startsWith("session_")) {
+      const phoneNumber = folder.replace("session_", "");
+      console.log("Restore:", phoneNumber);
+      await startUserBot(phoneNumber);
+      await delay(4000);
+    }
   }
 }
 
 // ================= ROUTES =================
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
+app.get("/", (req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
-// ✅ ROUTE PAIR CORRIGÉE
 app.get("/pair", async (req, res) => {
-
-  let sock = null;
-
   try {
-
     const num = String(req.query.number || "").replace(/[^0-9]/g, "");
+    if (!num || num.length < 8) return res.status(400).json({ error: "Numéro invalide" });
 
-    if (!num || num.length < 8) {
-      return res.status(400).json({ error: "Numéro invalide" });
-    }
-
-    sock = await startUserBot(num, true);
-
-    await delay(1500);
+    // ✅ pairing force clean session
+    const sock = await startUserBot(num, true);
+    await delay(1200);
 
     const code = await sock.requestPairingCode(num);
-
-    res.json({ code });
-
+    return res.json({ code });
   } catch (e) {
-
     console.log("PAIR ERROR:", e);
-
-    res.status(500).json({ error: "Impossible de générer le code" });
-
-  } finally {
-
-    setTimeout(() => {
-      try { sock?.end?.(); } catch {}
-    }, 2000);
-
+    return res.status(500).json({ error: "Impossible de générer le code" });
   }
-
 });
 
 // ================= SERVER =================
 app.listen(port, async () => {
-
   console.log("Serveur prêt:", port);
-
   global.botStartTime = Date.now();
-
+  await restoreSessions();
 });
