@@ -231,16 +231,6 @@ module.exports = async (sock, m, prefix, setMode, currentMode) => {
         .split("@")[0]
         .replace(/\D/g, "");
 
-      if (typeof global.setPrefixFor !== "function") {
-        return reply("❌ Prefix DB non chargé. Mets à jour index.js (global.setPrefixFor).");
-      }
-
-      const ok = global.setPrefixFor(botNum, newP);
-      if (!ok) return reply("❌ Impossible de sauvegarder le prefix (data/prefix.json).");
-
-      return reply(`✅ Prefix changé pour *${botNum}* : *${newP}*`);
-    }
-
     // group context
     let groupCtx = {};
     if (isGroup) groupCtx = await buildGroupContext(sock, from, sender);
